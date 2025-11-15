@@ -260,7 +260,7 @@ def synchronize_frames(lidar_data, image_data):
 
 def rename_synchronized_files(synchronized_data, lidar_dir, camera_dir):
     """
-    使用统一索引命名重命名同步文件，除了扩展名外其他部分完全相同
+    使用统一索引命名重命名点云文件，图像文件已按序号命名无需重命名
     
     参数:
         synchronized_data: 同步数据列表 [(lidar_filepath, {topic: image_filepath}, index)]
@@ -271,6 +271,8 @@ def rename_synchronized_files(synchronized_data, lidar_dir, camera_dir):
     image_subdir = os.path.join(camera_dir, 'image')
     Path(image_subdir).mkdir(parents=True, exist_ok=True)
     
+    lidar_renamed = 0
+    
     for lidar_filepath, image_files, index in synchronized_data:
         # 生成统一的基础文件名（不包含扩展名）
         base_filename = f"{index:06d}"
@@ -278,22 +280,17 @@ def rename_synchronized_files(synchronized_data, lidar_dir, camera_dir):
         # 重命名点云文件
         new_lidar_name = f"{base_filename}.pcd"
         new_lidar_path = os.path.join(lidar_dir, new_lidar_name)
-        try:
-            os.rename(lidar_filepath, new_lidar_path)
-        except Exception as e:
-            print(f"  重命名点云文件失败: {e}")
-        
-        # 重命名图像文件（只保留一个，不包含topic_name）
-        if image_files:
-            # 只取第一个图像文件（如果有多个话题）
-            first_topic = list(image_files.keys())[0]
-            image_filepath = image_files[first_topic]
-            new_image_name = f"{base_filename}.jpg"  # 不包含topic_name
-            new_image_path = os.path.join(image_subdir, new_image_name)  # 保存在image子目录中
+        if os.path.exists(lidar_filepath):
             try:
-                os.rename(image_filepath, new_image_path)
+                os.rename(lidar_filepath, new_lidar_path)
+                lidar_renamed += 1
             except Exception as e:
-                print(f"  重命名图像文件失败: {e}")
+                print(f"  重命名点云文件失败: {e}")
+        else:
+            print(f"  点云文件不存在，跳过重命名: {lidar_filepath}")
+    
+    print(f"  成功重命名 {lidar_renamed} 个点云文件")
+
 
 def process_bag_files(input_dir: str, output_base_dir: str) -> None:
     """
@@ -336,12 +333,16 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
         Path(label_dir).mkdir(parents=True, exist_ok=True)
         
         # 初始化传感器数据存储
-        lidar_data = {}
-        image_data = defaultdict(dict)
+        lidar_data = {}  # {timestamp: filepath}
+        image_data = defaultdict(dict)  # {topic: {timestamp: info}}
         
-        # 创建图像子目录，避免图像文件先存储在camera根目录
+        # 创建图像子目录
         image_subdir = os.path.join(camera_dir, 'image')
         Path(image_subdir).mkdir(parents=True, exist_ok=True)
+        
+        # 文件索引计数器
+        lidar_index = 0
+        image_index = 0
         
         try:
             # 尝试以ROS1 bag格式打开
@@ -386,12 +387,10 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
                     # 处理激光雷达数据
                     if connection.msgtype in LIDAR_TYPES:
                         points = extract_pointcloud2_data(msg)
-                        # 安全检查：使用 size > 0 而不是直接 if 语句
                         if points is not None and len(points) > 0:
-                            # 使用时间戳作为文件名
-                            timestamp_sec = int(to_timestamp(timestamp))
-                            timestamp_nsec = timestamp % 1000000000
-                            filename = f"{timestamp_sec}_{timestamp_nsec:06d}.pcd"
+                            # 直接使用序号命名
+                            filename = f"{lidar_index:06d}.pcd"
+                            lidar_index += 1
                             filepath = os.path.join(lidar_dir, filename)
                             
                             write_pcd_file(filepath, points)
@@ -399,19 +398,13 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
                     
                     # 处理图像数据
                     elif connection.msgtype in IMAGE_TYPES:
-                        # 保存图像数据直接到image子目录，避免先存储在camera根目录
                         msg_data = getattr(msg, 'data', None)
-                        # 安全检查：使用 size > 0 而不是直接 if 语句
                         if msg_data is not None and ((hasattr(msg_data, 'size') and msg_data.size > 0) or (not hasattr(msg_data, 'size') and len(msg_data) > 0)):
-                            # 使用时间戳作为文件名，保持原始命名方式
-                            timestamp_sec = int(to_timestamp(timestamp))
-                            timestamp_nsec = timestamp % 1000000000
-                            # 临时使用话题名称在文件名中，稍后会重命名
-                            filename = f"{timestamp_sec}_{timestamp_nsec:06d}_{connection.topic.replace('/', '_')}.jpg"
-                            # 直接保存到image子目录，避免先存储在camera根目录
+                            # 直接使用序号命名
+                            filename = f"{image_index:06d}.jpg"
+                            image_index += 1
                             filepath = os.path.join(image_subdir, filename)
                             
-                            # 使用专用函数处理图像数据
                             if save_image_data(msg, filepath):
                                 image_data[connection.topic][timestamp] = {
                                     'path': filepath,
@@ -436,6 +429,7 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
             
             if synchronized_data:
                 print(f"  同步了 {len(synchronized_data)} 帧")
+                # 重命名点云文件以匹配同步顺序，图像文件已按序号命名无需重命名
                 rename_synchronized_files(synchronized_data, lidar_dir, camera_dir)
             else:
                 print("  没有数据需要同步")
