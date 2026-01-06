@@ -12,6 +12,25 @@ PeROS是一个专门用于将ROS bag文件中的点云和图像数据转换为SU
 
 ## 安装依赖
 
+### 使用 uv (推荐)
+
+[uv](https://docs.astral.sh/uv/) 是一个超快的 Python 包管理器，兼容 pip 和 venv。
+
+```bash
+# 创建 Python 3.12 虚拟环境
+uv venv --python 3.12
+
+# 激活虚拟环境
+source .venv/bin/activate  # Linux/macOS
+# 或
+.venv\Scripts\Activate.ps1  # Windows PowerShell
+
+# 安装项目依赖
+uv sync
+```
+
+### 传统方式
+
 ```bash
 pip install -r requirements.txt
 ```
@@ -19,7 +38,7 @@ pip install -r requirements.txt
 或者直接安装:
 
 ```bash
-pip install rosbags
+pip install rosbags pillow tqdm
 ```
 
 ## 使用方法
