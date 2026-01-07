@@ -23,13 +23,17 @@ def main():
     data_dir = Path('./data')
     data_dir.mkdir(exist_ok=True)
     
+    # 修改输出目录为 data/output
+    output_dir = Path('./data/output')
+    output_dir.mkdir(exist_ok=True)
+    
     # 检查是否有bag文件需要处理
     bags_dir = data_dir / 'bags'
     if bags_dir.exists() and any(bags_dir.iterdir()):
         print("发现待处理的bag文件，正在处理...")
         # 导入并运行bag处理器
         if IMPORT_SUCCESS:
-            process_bag_files('./data/bags', './data')
+            process_bag_files('./data/bags', './data/output')  # 修改输出目录为 ./data/output
         else:
             print("由于缺少必要的模块，无法处理bag文件。")
             return
