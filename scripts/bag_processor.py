@@ -132,16 +132,15 @@ def extract_pointcloud2_data(msg) -> List[float]:
     
     return points
 
-def save_image_data(msg, filepath: str) -> bool:
+def save_image_to_memory(msg) -> Optional[PILImage.Image]:
     """
-    将 ROS 图像消息保存为 JPEG 文件
+    将 ROS 图像消息保存到内存中
     
     参数:
         msg: ROS 图像消息
-        filepath: 输出文件路径
         
     返回:
-        bool: 是否保存成功
+        PIL Image 对象，如果失败则返回 None
     """
     try:
         # 获取图像属性
@@ -153,7 +152,7 @@ def save_image_data(msg, filepath: str) -> bool:
         # 检查必要参数
         if width <= 0 or height <= 0 or msg_data is None:
             print(f"  图像参数无效: width={width}, height={height}")
-            return False
+            return None
             
         # 安全检查数据大小
         data_size = 0
@@ -164,7 +163,7 @@ def save_image_data(msg, filepath: str) -> bool:
             
         if data_size == 0:
             print("  图像数据为空")
-            return False
+            return None
             
         # 转换为字节
         data = bytes(msg_data)
@@ -196,52 +195,35 @@ def save_image_data(msg, filepath: str) -> bool:
             print(f"  未知的图像编码格式: {encoding}，尝试按灰度图处理")
             image = PILImage.frombuffer('L', (width, height), data, 'raw', 'L', 0, 1)
         
-        # 保存为 JPEG 格式
-        image.save(filepath, 'JPEG')
-        return True
+        return image
     except Exception as e:
-        print(f"  保存图像时出错: {e}")
-        # 尝试保存原始数据作为后备方案
-        try:
-            msg_data = getattr(msg, 'data', None)
-            if msg_data is not None:
-                with open(filepath, 'wb') as f:
-                    f.write(bytes(msg_data))
-            return True
-        except Exception as e2:
-            print(f"  保存原始数据也失败了: {e2}")
-            return False
+        print(f"  处理图像时出错: {e}")
+        return None
 
-def synchronize_frames(lidar_data, image_data):
+def find_closest_timestamp(target_ts, timestamps):
+    """查找最接近的时间戳"""
+    if not timestamps:
+        return None
+    return min(timestamps, key=lambda x: abs(x - target_ts))
+
+def process_synchronized_batch(lidar_data_batch, image_data_batch, lidar_dir, camera_dir, start_index):
     """
-    同步激光雷达点云和图像数据帧
-    
-    参数:
-        lidar_data: 激光雷达数据字典 {timestamp: filepath}
-        image_data: 图像数据字典 {topic: {timestamp: info}}
-        
-    返回:
-        同步的数据列表 [(lidar_filepath, {topic: image_filepath})]
+    处理一批同步的数据并保存到文件
     """
-    if not lidar_data or not image_data:
-        return []
+    # 创建图像子目录
+    image_subdir = os.path.join(camera_dir, 'image')
+    Path(image_subdir).mkdir(parents=True, exist_ok=True)
     
-    # 获取所有激光雷达时间戳并排序
-    lidar_timestamps = sorted(lidar_data.keys())
-    
-    # 获取所有图像话题
-    image_topics = list(image_data.keys())
-    
-    # 为每个图像话题创建时间戳到文件路径的映射
+    # 同步这批数据
+    synchronized_batch = []
+    lidar_timestamps = sorted(lidar_data_batch.keys())
+    image_topics = list(image_data_batch.keys())
     image_timestamps_map = {}
-    for topic in image_topics:
-        image_timestamps_map[topic] = sorted(image_data[topic].keys())
     
-    # 同步数据
-    synchronized_data = []
+    for topic in image_topics:
+        image_timestamps_map[topic] = sorted(image_data_batch[topic].keys())
     
     for i, lidar_ts in enumerate(lidar_timestamps):
-        lidar_filepath = lidar_data[lidar_ts]
         synced_images = {}
         
         # 为每个图像话题找到最接近的图像
@@ -250,55 +232,53 @@ def synchronize_frames(lidar_data, image_data):
                 continue
                 
             # 找到最接近的图像时间戳
-            closest_ts = min(image_timestamps_map[topic], key=lambda x: abs(x - lidar_ts))
-            synced_images[topic] = image_data[topic][closest_ts]['path']
+            closest_ts = find_closest_timestamp(lidar_ts, image_timestamps_map[topic])
+            if closest_ts:
+                synced_images[topic] = image_data_batch[topic][closest_ts]
         
         # 添加同步数据
-        synchronized_data.append((lidar_filepath, synced_images, i))
+        synchronized_batch.append((lidar_ts, synced_images, start_index + i))
     
-    return synchronized_data
-
-def rename_synchronized_files(synchronized_data, lidar_dir, camera_dir):
-    """
-    使用统一索引命名重命名点云文件，图像文件已按序号命名无需重命名
+    # 保存同步后的数据到文件
+    lidar_saved = 0
+    image_saved = 0
     
-    参数:
-        synchronized_data: 同步数据列表 [(lidar_filepath, {topic: image_filepath}, index)]
-        lidar_dir: 点云数据目录
-        camera_dir: 图像数据目录
-    """
-    # 创建图像子目录
-    image_subdir = os.path.join(camera_dir, 'image')
-    Path(image_subdir).mkdir(parents=True, exist_ok=True)
-    
-    lidar_renamed = 0
-    
-    for lidar_filepath, image_files, index in synchronized_data:
+    for lidar_ts, image_files, index in synchronized_batch:
         # 生成统一的基础文件名（不包含扩展名）
         base_filename = f"{index:06d}"
         
-        # 重命名点云文件
-        new_lidar_name = f"{base_filename}.pcd"
-        new_lidar_path = os.path.join(lidar_dir, new_lidar_name)
-        if os.path.exists(lidar_filepath):
-            try:
-                os.rename(lidar_filepath, new_lidar_path)
-                lidar_renamed += 1
-            except Exception as e:
-                print(f"  重命名点云文件失败: {e}")
-        else:
-            print(f"  点云文件不存在，跳过重命名: {lidar_filepath}")
+        # 写入同步后的点云文件
+        if lidar_ts in lidar_data_batch:
+            points = lidar_data_batch[lidar_ts]
+            new_lidar_name = f"{base_filename}.pcd"
+            new_lidar_path = os.path.join(lidar_dir, new_lidar_name)
+            
+            write_pcd_file(new_lidar_path, points)
+            lidar_saved += 1
+        
+        # 写入同步后的图像文件
+        for topic, img_info in image_files.items():
+            if 'data' in img_info:
+                new_img_name = f"{base_filename}.jpg"
+                new_img_path = os.path.join(image_subdir, new_img_name)
+                
+                # 保存图像到磁盘
+                try:
+                    img_info['data'].save(new_img_path)
+                    image_saved += 1
+                except Exception as e:
+                    print(f"  保存图像失败: {e}")
     
-    print(f"  成功重命名 {lidar_renamed} 个点云文件")
+    return lidar_saved, image_saved
 
-
-def process_bag_files(input_dir: str, output_base_dir: str) -> None:
+def process_bag_files(input_dir: str, output_base_dir: str, batch_size: int = 100) -> None:
     """
     处理目录中的所有bag文件，并将提取的数据保存到指定的目录结构中。
     
     参数:
         input_dir: 包含bag文件的输入目录
         output_base_dir: 输出数据的基目录
+        batch_size: 批处理大小，控制内存使用量
     """
     # 创建基础输出目录
     Path(output_base_dir).mkdir(parents=True, exist_ok=True)
@@ -332,17 +312,13 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
         Path(camera_dir).mkdir(parents=True, exist_ok=True)
         Path(label_dir).mkdir(parents=True, exist_ok=True)
         
-        # 初始化传感器数据存储
-        lidar_data = {}  # {timestamp: filepath}
-        image_data = defaultdict(dict)  # {topic: {timestamp: info}}
+        # 初始化传感器数据存储（在内存中处理）
+        lidar_data = {}  # {timestamp: point_cloud_data}
+        image_data = defaultdict(dict)  # {topic: {timestamp: image_data}}
         
         # 创建图像子目录
         image_subdir = os.path.join(camera_dir, 'image')
         Path(image_subdir).mkdir(parents=True, exist_ok=True)
-        
-        # 文件索引计数器
-        lidar_index = 0
-        image_index = 0
         
         try:
             # 尝试以ROS1 bag格式打开
@@ -373,6 +349,8 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
             )
             
             processed_messages = 0
+            batch_index = 0  # 用于文件命名的全局索引
+            
             for connection, timestamp, rawdata in progress_bar:
                 try:
                     # 更新进度条描述，显示最近处理的话题
@@ -388,51 +366,91 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
                     if connection.msgtype in LIDAR_TYPES:
                         points = extract_pointcloud2_data(msg)
                         if points is not None and len(points) > 0:
-                            # 直接使用序号命名
-                            filename = f"{lidar_index:06d}.pcd"
-                            lidar_index += 1
-                            filepath = os.path.join(lidar_dir, filename)
-                            
-                            write_pcd_file(filepath, points)
-                            lidar_data[timestamp] = filepath
+                            # 将点云数据存储在内存中而不是立即写入文件
+                            lidar_data[timestamp] = points
                     
                     # 处理图像数据
                     elif connection.msgtype in IMAGE_TYPES:
-                        msg_data = getattr(msg, 'data', None)
-                        if msg_data is not None and ((hasattr(msg_data, 'size') and msg_data.size > 0) or (not hasattr(msg_data, 'size') and len(msg_data) > 0)):
-                            # 直接使用序号命名
-                            filename = f"{image_index:06d}.jpg"
-                            image_index += 1
-                            filepath = os.path.join(image_subdir, filename)
-                            
-                            if save_image_data(msg, filepath):
-                                image_data[connection.topic][timestamp] = {
-                                    'path': filepath,
-                                    'width': getattr(msg, 'width', 0),
-                                    'height': getattr(msg, 'height', 0),
-                                    'encoding': getattr(msg, 'encoding', 'unknown')
-                                }
+                        # 将图像数据存储在内存中而不是立即写入文件
+                        image = save_image_to_memory(msg)
+                        if image:
+                            image_data[connection.topic][timestamp] = {
+                                'data': image,
+                                'width': getattr(msg, 'width', 0),
+                                'height': getattr(msg, 'height', 0),
+                                'encoding': getattr(msg, 'encoding', 'unknown')
+                            }
                 
                 except Exception as e:
                     # 不在进度条中显示错误，避免刷屏
                     continue
                 
                 processed_messages += 1
+                
+                # 检查是否达到批次大小，如果是，则处理当前批次并清空内存
+                if len(lidar_data) >= batch_size or sum(len(imgs) for imgs in image_data.values()) >= batch_size:
+                    if lidar_data and any(image_data.values()):
+                        print(f"  处理批次 (内存中有 {len(lidar_data)} 个点云, {sum(len(imgs) for imgs in image_data.values())} 个图像)")
+                        
+                        # 处理当前批次的同步数据
+                        lidar_saved, image_saved = process_synchronized_batch(
+                            lidar_data.copy(), 
+                            {k: v.copy() for k, v in image_data.items()}, 
+                            lidar_dir, 
+                            camera_dir, 
+                            batch_index
+                        )
+                        
+                        print(f"  批次处理完成: {lidar_saved} 个点云文件和 {image_saved} 个图像文件")
+                        
+                        # 更新全局索引
+                        batch_index += max(len(lidar_data), max([len(imgs) for imgs in image_data.values()] or [0]))
+                        
+                        # 清空内存
+                        lidar_data.clear()
+                        for topic in image_data:
+                            image_data[topic].clear()
+                        
+                        # 显式调用垃圾回收
+                        import gc
+                        gc.collect()
             
-            # 关闭进度条
-            progress_bar.close()
-            reader.close()
+            # 处理剩余的数据
+            if lidar_data and any(image_data.values()):
+                print(f"  处理最后一批数据 (内存中有 {len(lidar_data)} 个点云, {sum(len(imgs) for imgs in image_data.values())} 个图像)")
+                
+                lidar_saved, image_saved = process_synchronized_batch(
+                    lidar_data, 
+                    image_data, 
+                    lidar_dir, 
+                    camera_dir, 
+                    batch_index
+                )
+                
+                print(f"  最后一批处理完成: {lidar_saved} 个点云文件和 {image_saved} 个图像文件")
             
-            # 执行帧同步和重命名
-            print("  正在执行帧同步...")
-            synchronized_data = synchronize_frames(lidar_data, image_data)
-            
-            if synchronized_data:
-                print(f"  同步了 {len(synchronized_data)} 帧")
-                # 重命名点云文件以匹配同步顺序，图像文件已按序号命名无需重命名
-                rename_synchronized_files(synchronized_data, lidar_dir, camera_dir)
-            else:
-                print("  没有数据需要同步")
+            # 如果没有同步数据，但仍需要保存原始数据
+            elif lidar_data or any(image_data.values()):
+                print("  没有同步数据，保存原始数据...")
+                
+                # 按原始顺序保存点云数据
+                for idx, (ts, points) in enumerate(lidar_data.items()):
+                    filename = f"{batch_index + idx:06d}.pcd"
+                    filepath = os.path.join(lidar_dir, filename)
+                    write_pcd_file(filepath, points)
+                
+                # 按原始顺序保存图像数据
+                img_idx = 0
+                for topic_dict in image_data.values():
+                    for ts, img_info in topic_dict.items():
+                        if 'data' in img_info:
+                            new_img_name = f"{batch_index + img_idx:06d}.jpg"
+                            new_img_path = os.path.join(image_subdir, new_img_name)
+                            try:
+                                img_info['data'].save(new_img_path)
+                                img_idx += 1
+                            except Exception as e:
+                                print(f"  保存图像失败: {e}")
             
             # 创建场景描述文件
             desc_file = os.path.join(scene_dir, 'desc.json')
@@ -440,9 +458,9 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
                 'scene_name': scene_name,
                 'bag_file': bag_file.name,
                 'processed_date': datetime.now().isoformat(),
-                'lidar_count': len(lidar_data),
+                'lidar_count': processed_messages,  # 这里应该是实际处理的总数
                 'camera_topics': list(image_data.keys()),
-                'synchronized_frames': len(synchronized_data)
+                'synchronized_frames': batch_index  # 实际保存的同步帧数
             }
             
             with open(desc_file, 'w', encoding='utf-8') as f:
@@ -451,18 +469,22 @@ def process_bag_files(input_dir: str, output_base_dir: str) -> None:
             print(f"  场景描述已保存: {desc_file}")
             print(f"  点云数量: {len(lidar_data)}")
             print(f"  图像话题数量: {len(image_data)}")
-            print(f"  同步帧数: {len(synchronized_data)}")
+            print(f"  同步帧数: {batch_index}")
+            
+            reader.close()
             
         except Exception as e:
             print(f"处理文件 {bag_file.name} 时出错: {e}")
+            if 'reader' in locals():
+                reader.close()
             continue
     
     print(f"\n所有bag文件处理完成，结果保存在: {output_base_dir}")
 
 def main():
     """主函数"""
-    # 处理data/bags目录中的所有bag文件
-    process_bag_files('./data/bags', './data')
+    # 处理data/bags目录中的所有bag文件，设置较小的批次大小以减少内存使用
+    process_bag_files('./data/bags', './data', batch_size=50)
 
 if __name__ == "__main__":
     main()

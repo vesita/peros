@@ -8,7 +8,6 @@ PeROS是一个专门用于将ROS bag文件中的点云和图像数据转换为SU
 - 提取激光雷达点云数据并转换为PCD格式
 - 提取图像数据并转换为JPEG格式
 - 自动生成符合SUSTechPOINTS标注工具要求的目录结构
-- 提供Web界面进行数据标注
 
 ## 安装依赖
 
@@ -17,14 +16,6 @@ PeROS是一个专门用于将ROS bag文件中的点云和图像数据转换为SU
 [uv](https://docs.astral.sh/uv/) 是一个超快的 Python 包管理器，兼容 pip 和 venv。
 
 ```bash
-# 创建 Python 3.12 虚拟环境
-uv venv --python 3.12
-
-# 激活虚拟环境
-source .venv/bin/activate  # Linux/macOS
-# 或
-.venv\Scripts\Activate.ps1  # Windows PowerShell
-
 # 安装项目依赖
 uv sync
 ```
@@ -32,13 +23,7 @@ uv sync
 ### 传统方式
 
 ```bash
-pip install -r requirements.txt
-```
-
-或者直接安装:
-
-```bash
-pip install rosbags pillow tqdm
+pip install rosbags pillow tqdm numpy opencv-python pyyaml
 ```
 
 ## 使用方法
@@ -60,7 +45,7 @@ python main.py
 
 这将自动处理 `data/bags` 目录中的所有bag文件，并生成如下目录结构:
 
-```
+```file
 data/
 ├── bag_filename/              # 每个bag文件对应一个场景目录
 │   ├── lidar/                 # 激光雷达点云数据 (.pcd文件)
@@ -77,10 +62,6 @@ data/
     ├── your_file1.bag
     └── your_file2.bag
 ```
-
-### 3. 开始标注
-
-处理完成后，系统会提示您在浏览器中访问 [http://localhost:8080](http://localhost:8080) 进行标注。
 
 ## 数据格式说明
 
@@ -100,6 +81,6 @@ data/
 
 - IMU数据会被忽略，仅处理点云和图像数据
 - 文件名基于时间戳自动生成，确保数据同步
-- 所有处理脚本位于 `scripts/` 目录中，不会暴露在项目根目录
+- 所有处理脚本位于 `scripts/` 目录中，包含点云处理和bag文件解析功能
 - 处理后的数据可直接用于SUSTechPOINTS标注工具
 - 匹配的点云和图像文件具有完全相同的文件名（除了扩展名.pcd和.jpg）
